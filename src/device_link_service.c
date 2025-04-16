@@ -24,6 +24,7 @@
 #endif
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h> /* For usleep() */
 #include "device_link_service.h"
 #include "property_list_service.h"
 #include "common/debug.h"
@@ -324,17 +325,43 @@ device_link_service_error_t device_link_service_send_ping(device_link_service_cl
  */
 device_link_service_error_t device_link_service_send_process_message(device_link_service_client_t client, plist_t message)
 {
+#ifdef DEBUG_MOBILEBACKUP2
+	fprintf(stderr, "====== DLS: device_link_service_send_process_message called ======\n");
+	fflush(stderr);
+#endif
 	if (!client || !client->parent || !message)
 		return DEVICE_LINK_SERVICE_E_INVALID_ARG;
 
 	if (plist_get_node_type(message) != PLIST_DICT)
 		return DEVICE_LINK_SERVICE_E_INVALID_ARG;
 
+#ifdef DEBUG_MOBILEBACKUP2
+	fprintf(stderr, "====== DLS: Creating DLMessageProcessMessage array ======\n");
+	fflush(stderr);
+	char* xml = NULL;
+	uint32_t len = 0;
+	plist_to_xml(message, &xml, &len);
+	if (xml) {
+		fprintf(stderr, "====== DLS: Message to send XML: %s ======\n", xml);
+		free(xml);
+	}
+#endif
+
 	plist_t array = plist_new_array();
 	plist_array_append_item(array, plist_new_string("DLMessageProcessMessage"));
 	plist_array_append_item(array, plist_copy(message));
 
+#ifdef DEBUG_MOBILEBACKUP2
+	fprintf(stderr, "====== DLS: Sending message via property_list_service_send_binary_plist ======\n");
+	fflush(stderr);
+#endif
 	device_link_service_error_t err = device_link_error(property_list_service_send_binary_plist(client->parent, array));
+	
+#ifdef DEBUG_MOBILEBACKUP2
+	fprintf(stderr, "====== DLS: Send result: %d ======\n", err);
+	fflush(stderr);
+#endif
+	
 	plist_free(array);
 
 	return err;
@@ -390,47 +417,137 @@ device_link_service_error_t device_link_service_receive_message(device_link_serv
  */
 device_link_service_error_t device_link_service_receive_process_message(device_link_service_client_t client, plist_t *message)
 {
-	if (!client || !client->parent || !message)
+#ifdef DEBUG_MOBILEBACKUP2
+	fprintf(stderr, "====== DLS: device_link_service_receive_process_message called ======\n");
+	fflush(stderr);
+#endif
+	if (!client || !message)
+		return DEVICE_LINK_SERVICE_E_INVALID_ARG;
+	*message = NULL;
+
+	property_list_service_client_t pls_client = client->parent;
+	if (!pls_client)
 		return DEVICE_LINK_SERVICE_E_INVALID_ARG;
 
+	/* receive DLMessageProcessMessage */
 	plist_t pmsg = NULL;
-	device_link_service_error_t err = device_link_error(property_list_service_receive_plist(client->parent, &pmsg));
-	if (err != DEVICE_LINK_SERVICE_E_SUCCESS) {
-		return err;
-	}
+	int attempts = 0;
+	const int max_attempts = 3;
+	property_list_service_error_t perr;
+	device_link_service_error_t derr = DEVICE_LINK_SERVICE_E_SUCCESS;
 
-	err = DEVICE_LINK_SERVICE_E_UNKNOWN_ERROR;
+retry_receive:
+#ifdef DEBUG_MOBILEBACKUP2
+	fprintf(stderr, "====== DLS: About to receive message via property_list_service_receive_plist (attempt %d of %d) ======\n", 
+	        attempts + 1, max_attempts);
+	fflush(stderr);
+#endif
+	perr = property_list_service_receive_plist(pls_client, &pmsg);
+	if (pmsg && (perr == PROPERTY_LIST_SERVICE_E_SUCCESS)) {
+#ifdef DEBUG_MOBILEBACKUP2
+		fprintf(stderr, "====== DLS: Received message, checking message contents ======\n");
+		fflush(stderr);
+		char* xml = NULL;
+		uint32_t len = 0;
+		plist_to_xml(pmsg, &xml, &len);
+		if (xml) {
+			fprintf(stderr, "====== DLS: Message XML: %s ======\n", xml);
+			free(xml);
+		}
+#endif
+		// Check if we have an array (old format) or dict (new format)
+		plist_type type = plist_get_node_type(pmsg);
+		if (type == PLIST_ARRAY) {
+#ifdef DEBUG_MOBILEBACKUP2
+			fprintf(stderr, "====== DLS: Message is in array format, checking array elements ======\n");
+			fflush(stderr);
+#endif
+			// Old format: [DLMessageProcessMessage, {dict}]
+			if (plist_array_get_size(pmsg) >= 2) {
+				plist_t cmd = plist_array_get_item(pmsg, 0);
+				char *cmd_str = NULL;
+				
+				if (cmd && (plist_get_node_type(cmd) == PLIST_STRING)) {
+					plist_get_string_val(cmd, &cmd_str);
+				}
 
-	char *msg = NULL;
-	device_link_service_get_message(pmsg, &msg);
-	if (!msg || strcmp(msg, "DLMessageProcessMessage") != 0) {
-		debug_info("Did not receive DLMessageProcessMessage as expected!");
-		err = DEVICE_LINK_SERVICE_E_PLIST_ERROR;
-		goto leave;
-	}
-
-	if (plist_array_get_size(pmsg) != 2) {
-		debug_info("Malformed plist received for DLMessageProcessMessage");
-		err = DEVICE_LINK_SERVICE_E_PLIST_ERROR;
-		goto leave;
-	}
-
-	plist_t msg_loc = plist_array_get_item(pmsg, 1);
-	if (msg_loc) {
-		*message = plist_copy(msg_loc);
-		err = DEVICE_LINK_SERVICE_E_SUCCESS;
+				if (cmd_str && strcmp(cmd_str, "DLMessageProcessMessage") == 0) {
+#ifdef DEBUG_MOBILEBACKUP2
+					fprintf(stderr, "====== DLS: Found DLMessageProcessMessage command, extracting item 1 ======\n");
+					fflush(stderr);
+#endif
+					plist_t item = plist_array_get_item(pmsg, 1);
+					if (item) {
+						*message = plist_copy(item);
+					}
+				} else {
+#ifdef DEBUG_MOBILEBACKUP2
+					fprintf(stderr, "====== DLS: ERROR - Array item 0 is not DLMessageProcessMessage but %s ======\n", cmd_str ? cmd_str : "NULL");
+					fflush(stderr);
+#endif
+				}
+				
+				if (cmd_str)
+					free(cmd_str);
+			} else {
+#ifdef DEBUG_MOBILEBACKUP2
+				fprintf(stderr, "====== DLS: ERROR - Array has insufficient items: %d ======\n", plist_array_get_size(pmsg));
+				fflush(stderr);
+#endif
+			}
+		} else {
+			// New format: check for dict key
+			plist_t node = plist_dict_get_item(pmsg, "DLMessageProcessMessage");
+			if (node) {
+#ifdef DEBUG_MOBILEBACKUP2
+				fprintf(stderr, "====== DLS: Found DLMessageProcessMessage key in dictionary ======\n");
+				fflush(stderr);
+#endif
+				*message = plist_copy(node);
+			} else {
+#ifdef DEBUG_MOBILEBACKUP2
+				fprintf(stderr, "====== DLS: ERROR - DLMessageProcessMessage not found in dictionary ======\n");
+				fflush(stderr);
+#endif
+			}
+		}
+		
+		if (!*message) {
+#ifdef DEBUG_MOBILEBACKUP2
+			fprintf(stderr, "====== DLS: ERROR - Failed to extract DLMessageProcessMessage content ======\n");
+			fflush(stderr);
+#endif
+		}
 	} else {
-		*message = NULL;
-		err = DEVICE_LINK_SERVICE_E_PLIST_ERROR;
+#ifdef DEBUG_MOBILEBACKUP2
+		fprintf(stderr, "====== DLS: Failed to receive message, error %d ======\n", perr);
+		fflush(stderr);
+		
+		/* When debugging, retry a few times to handle debugger delays */
+		if (attempts < max_attempts) {
+			attempts++;
+			fprintf(stderr, "====== DLS: Retrying receive operation ======\n");
+			fflush(stderr);
+			/* Sleep before retrying */
+			usleep(1000000); /* 1 second */
+			goto retry_receive;
+		}
+#endif
+		debug_info("Did not receive DLMessageProcessMessage");
 	}
 
-leave:
-	if (msg)
-		free(msg);
-	if (pmsg)
+	if (pmsg) {
 		plist_free(pmsg);
+	}
 
-	return err;
+	if (derr != DEVICE_LINK_SERVICE_E_SUCCESS) {
+		return derr;
+	}
+
+	if (!*message)
+		return DEVICE_LINK_SERVICE_E_PLIST_ERROR;
+
+	return DEVICE_LINK_SERVICE_E_SUCCESS;
 }
 
 /**

@@ -1,0 +1,8 @@
+### macOS Build Scripts (x86_64 and arm64)
+
+For macOS users, we provide specialized build scripts to create architecture-specific and universal binaries:
+
+- `build_macos.sh`: Builds separate x86_64 and arm64 versions
+- `create_universal_binary.sh`: Creates universal binaries combining both architectures
+
+See `MACOS_BUILD.md` for detailed instructions on building for both Intel and Apple Silicon Macs. 

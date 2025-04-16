@@ -74,6 +74,15 @@ idevicebackup2_CFLAGS = $(AM_CFLAGS) $(limd_glue_CFLAGS)
 idevicebackup2_LDFLAGS = $(AM_LDFLAGS) $(limd_glue_LIBS)
 idevicebackup2_LDADD = $(top_builddir)/src/libimobiledevice-1.0.la
 
+# Add a debug target
+if DEBUG_BUILD
+bin_PROGRAMS += idevicebackup2_debug
+idevicebackup2_debug_SOURCES = idevicebackup2.c
+idevicebackup2_debug_CFLAGS = $(AM_CFLAGS) $(limd_glue_CFLAGS) -DDEBUG_BUILD -DDEBUG_MOBILEBACKUP2=0
+idevicebackup2_debug_LDFLAGS = $(AM_LDFLAGS) $(limd_glue_LIBS)
+idevicebackup2_debug_LDADD = $(top_builddir)/src/libimobiledevice-1.0.la $(top_builddir)/common/libinternalcommon.la
+endif
+
 ideviceimagemounter_SOURCES = ideviceimagemounter.c
 ideviceimagemounter_CFLAGS = $(AM_CFLAGS) $(limd_glue_CFLAGS) $(libtatsu_CFLAGS)
 ideviceimagemounter_LDFLAGS = $(AM_LDFLAGS) $(limd_glue_LIBS) $(libtatsu_LIBS)

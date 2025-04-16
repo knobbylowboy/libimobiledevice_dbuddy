@@ -23,6 +23,7 @@
 #endif
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "property_list_service.h"
 #include "common/debug.h"
@@ -182,83 +183,137 @@ property_list_service_error_t property_list_service_send_binary_plist(property_l
  */
 static property_list_service_error_t internal_plist_receive_timeout(property_list_service_client_t client, plist_t *plist, unsigned int timeout)
 {
+#ifdef DEBUG_MOBILEBACKUP2
+	fprintf(stderr, "====== PLS: internal_plist_receive_timeout called with timeout %d ======\n", timeout);
+	fflush(stderr);
+#endif
 	property_list_service_error_t res = PROPERTY_LIST_SERVICE_E_UNKNOWN_ERROR;
 	uint32_t pktlen = 0;
 	uint32_t bytes = 0;
 
 	if (!client || (client && !client->parent) || !plist) {
+#ifdef DEBUG_MOBILEBACKUP2
+		fprintf(stderr, "====== PLS: ERROR - Invalid arguments ======\n");
+		fflush(stderr);
+#endif
 		return PROPERTY_LIST_SERVICE_E_INVALID_ARG;
 	}
 
 	*plist = NULL;
+#ifdef DEBUG_MOBILEBACKUP2
+	fprintf(stderr, "====== PLS: Calling service_receive_with_timeout ======\n");
+	fflush(stderr);
+	/* When debugging, add a small delay before each receive to give system time */
+	usleep(100000); /* 100ms */
+#endif
 	service_error_t serr = service_receive_with_timeout(client->parent, (char*)&pktlen, sizeof(pktlen), &bytes, timeout);
 	if (serr != SERVICE_E_SUCCESS) {
+#ifdef DEBUG_MOBILEBACKUP2
+		fprintf(stderr, "====== PLS: Initial read failed with error %d ======\n", serr);
+		fflush(stderr);
+#endif
 		debug_info("initial read failed!");
 		return service_to_property_list_service_error(serr);
 	}
 
 	if (bytes == 0) {
-		/* success but 0 bytes length, assume timeout */
-		return PROPERTY_LIST_SERVICE_E_RECEIVE_TIMEOUT;
+#ifdef DEBUG_MOBILEBACKUP2
+		fprintf(stderr, "====== PLS: No data received ======\n");
+		fflush(stderr);
+#endif
+		debug_info("no data received");
+		return PROPERTY_LIST_SERVICE_E_NOT_ENOUGH_DATA;
+	} else if (bytes < sizeof(pktlen)) {
+#ifdef DEBUG_MOBILEBACKUP2
+		fprintf(stderr, "====== PLS: Not enough data received for packet length (%d of %d bytes) ======\n", bytes, sizeof(pktlen));
+		fflush(stderr);
+#endif
+		debug_info("not enough data for packet length");
+		return PROPERTY_LIST_SERVICE_E_NOT_ENOUGH_DATA;
 	}
 
-	debug_info("initial read=%i", bytes);
-
-	uint32_t curlen = 0;
-	char *content = NULL;
-
 	pktlen = be32toh(pktlen);
-	debug_info("%d bytes following", pktlen);
-	content = (char*)malloc(pktlen);
-	if (!content) {
-		debug_info("out of memory when allocating %d bytes", pktlen);
+	if (pktlen < 1) {
+#ifdef DEBUG_MOBILEBACKUP2
+		fprintf(stderr, "====== PLS: Invalid packet length received: %d ======\n", pktlen);
+		fflush(stderr);
+#endif
+		debug_info("invalid packet length");
 		return PROPERTY_LIST_SERVICE_E_UNKNOWN_ERROR;
 	}
 
-	while (curlen < pktlen) {
-		serr = service_receive(client->parent, content+curlen, pktlen-curlen, &bytes);
-		if (serr != SERVICE_E_SUCCESS) {
-			res = service_to_property_list_service_error(serr);
-			break;
-		}
-		debug_info("received %d bytes", bytes);
-		curlen += bytes;
+	char *content = (char*)malloc(pktlen);
+	if (!content) {
+#ifdef DEBUG_MOBILEBACKUP2
+		fprintf(stderr, "====== PLS: ERROR - Out of memory when allocating %d bytes ======\n", pktlen);
+		fflush(stderr);
+#endif
+		return PROPERTY_LIST_SERVICE_E_UNKNOWN_ERROR;
 	}
 
-	if (curlen < pktlen) {
-		debug_info("received incomplete packet (%d of %d bytes)", curlen, pktlen);
-		if (curlen > 0) {
-			debug_info("incomplete packet following:");
-			debug_buffer(content, curlen);
-		}
+#ifdef DEBUG_MOBILEBACKUP2
+	fprintf(stderr, "====== PLS: Attempting to receive %d bytes of data ======\n", pktlen);
+	fflush(stderr);
+	/* Add a small delay before receive when debugging */
+	usleep(100000); /* 100ms */
+#endif
+	serr = service_receive_with_timeout(client->parent, content, pktlen, &bytes, timeout);
+	if (serr != SERVICE_E_SUCCESS) {
+#ifdef DEBUG_MOBILEBACKUP2
+		fprintf(stderr, "====== PLS: ERROR - Failed to receive data, error %d ======\n", serr);
+		fflush(stderr);
+#endif
+		debug_info("service_receive_with_timeout failed: %d", serr);
 		free(content);
-		return res;
+		return service_to_property_list_service_error(serr);
 	}
 
-	if ((pktlen > 8) && !memcmp(content, "bplist00", 8)) {
-		plist_from_bin(content, pktlen, plist);
-	} else if ((pktlen > 5) && !memcmp(content, "<?xml", 5)) {
-		/* iOS 4.3+ hack: plist data might contain invalid characters, thus we convert those to spaces */
-		for (bytes = 0; bytes < pktlen-1; bytes++) {
-			if ((content[bytes] >= 0) && (content[bytes] < 0x20) && (content[bytes] != 0x09) && (content[bytes] != 0x0a) && (content[bytes] != 0x0d))
-				content[bytes] = 0x20;
-		}
-		plist_from_xml(content, pktlen, plist);
-	} else {
-		debug_info("WARNING: received unexpected non-plist content");
-		debug_buffer(content, pktlen);
+	if (bytes != pktlen) {
+#ifdef DEBUG_MOBILEBACKUP2
+		fprintf(stderr, "====== PLS: ERROR - Received incomplete data (%d of %d bytes) ======\n", bytes, pktlen);
+		fflush(stderr);
+#endif
+		free(content);
+		return PROPERTY_LIST_SERVICE_E_NOT_ENOUGH_DATA;
 	}
+
+#ifdef DEBUG_MOBILEBACKUP2
+	fprintf(stderr, "====== PLS: Successfully received %d bytes of data, attempting to parse ======\n", bytes);
+	fflush(stderr);
+#endif
+	plist_from_xml(content, bytes, plist);
 
 	if (*plist) {
+#ifdef DEBUG_MOBILEBACKUP2
+		fprintf(stderr, "====== PLS: Successfully parsed plist from XML ======\n");
+		fflush(stderr);
+#endif
+		debug_info("successfully parsed plist");
 		debug_plist(*plist);
 		res = PROPERTY_LIST_SERVICE_E_SUCCESS;
 	} else {
-		res = PROPERTY_LIST_SERVICE_E_PLIST_ERROR;
+		debug_info("parsing XML to plist failed!");
+		/* try to parse binary plist */
+		plist_from_bin(content, bytes, plist);
+		if (*plist) {
+#ifdef DEBUG_MOBILEBACKUP2
+			fprintf(stderr, "====== PLS: Successfully parsed plist from binary ======\n");
+			fflush(stderr);
+#endif
+			debug_info("successfully parsed binary plist");
+			debug_plist(*plist);
+			res = PROPERTY_LIST_SERVICE_E_SUCCESS;
+		} else {
+#ifdef DEBUG_MOBILEBACKUP2
+			fprintf(stderr, "====== PLS: ERROR - Failed to parse plist data (not XML or binary) ======\n");
+			fflush(stderr);
+#endif
+			debug_info("failed to parse binary plist too!");
+			res = PROPERTY_LIST_SERVICE_E_PLIST_ERROR;
+		}
 	}
 
 	free(content);
-	content = NULL;
-
 	return res;
 }
 
@@ -269,7 +324,12 @@ property_list_service_error_t property_list_service_receive_plist_with_timeout(p
 
 property_list_service_error_t property_list_service_receive_plist(property_list_service_client_t client, plist_t *plist)
 {
+#ifdef DEBUG_MOBILEBACKUP2
+	/* Use a much longer timeout when debugging to allow time for debugger stepping */
+	return internal_plist_receive_timeout(client, plist, 120000); /* 2 minutes timeout when debugging */
+#else
 	return internal_plist_receive_timeout(client, plist, 30000);
+#endif
 }
 
 property_list_service_error_t property_list_service_enable_ssl(property_list_service_client_t client)

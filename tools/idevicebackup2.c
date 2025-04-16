@@ -26,6 +26,12 @@
 
 #define TOOL_NAME "idevicebackup2"
 
+/* Debug mode settings */
+#ifdef DEBUG_BUILD
+int verbose = 1; /* Ensure verbose flag is available for mobilebackup2.c */
+#define DEBUG_MOBILEBACKUP2 0
+#endif
+
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -48,6 +54,17 @@
 #include <libimobiledevice/diagnostics_relay.h>
 #include <libimobiledevice-glue/utils.h>
 #include <plist/plist.h>
+
+#ifdef DEBUG_BUILD
+/* Add debug hooks we can use to trace what's happening */
+mobilebackup2_error_t debug_hook_mobilebackup2_client_new(idevice_t device, lockdownd_service_descriptor_t service, mobilebackup2_client_t *client)
+{
+    printf("[DEBUG] Calling mobilebackup2_client_new in debug mode\n");
+    mobilebackup2_error_t result = mobilebackup2_client_new(device, service, client);
+    printf("[DEBUG] mobilebackup2_client_new returned: %d\n", result);
+    return result;
+}
+#endif
 
 #include <endianness.h>
 
@@ -72,7 +89,9 @@
 #define CODE_ERROR_REMOTE 0x0b
 #define CODE_FILE_DATA 0x0c
 
+#ifndef DEBUG_BUILD
 static int verbose = 1;
+#endif
 static int quit_flag = 0;
 static int passcode_requested = 0;
 
@@ -1463,8 +1482,6 @@ static void print_usage(int argc, char **argv, int is_error)
 		"  -h, --help            prints usage information\n"
 		"  -v, --version         prints version information\n"
 		"\n"
-		"Homepage:    <" PACKAGE_URL ">\n"
-		"Bug Reports: <" PACKAGE_BUGREPORT ">\n"
 	);
 }
 
@@ -1472,6 +1489,27 @@ static void print_usage(int argc, char **argv, int is_error)
 
 int main(int argc, char *argv[])
 {
+	/* Debug verification */
+#if DEBUG_MOBILEBACKUP2 == 1
+	fprintf(stderr, "====== IDEVICEBACKUP2: Running with DEBUG_MOBILEBACKUP2 defined ======\n");
+	fflush(stderr);
+#endif
+
+    setvbuf(stdout, NULL, _IONBF, 0);
+
+#ifdef DEBUG_BUILD
+	fprintf(stderr, "====== RUNNING DEBUG BUILD OF IDEVICEBACKUP2 ======\n");
+	fflush(stderr);
+	setenv("DEBUG_MOBILEBACKUP2", "1", 1);
+#endif
+
+	signal(SIGINT, clean_exit);
+	signal(SIGTERM, clean_exit);
+#ifndef _WIN32
+	signal(SIGQUIT, clean_exit);
+	signal(SIGPIPE, SIG_IGN);
+#endif
+
 	idevice_error_t ret = IDEVICE_E_UNKNOWN_ERROR;
 	lockdownd_error_t ldret = LOCKDOWN_E_UNKNOWN_ERROR;
 	int i = 0;
