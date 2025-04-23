@@ -120,4 +120,8 @@ echo "arm64 build can be found in: $(pwd)/build/arm64"
 unset PKG_CONFIG_PATH
 unset CFLAGS
 unset LDFLAGS
-unset CPPFLAGS 
+unset CPPFLAGS
+
+# Make the fix script executable and run it
+chmod +x ./fix_library_paths.sh
+./fix_library_paths.sh 
