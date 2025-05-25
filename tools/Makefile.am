@@ -32,7 +32,10 @@ bin_PROGRAMS = \
 	idevicenotificationproxy \
 	idevicecrashreport \
 	idevicesetlocation \
-	afcclient
+	afcclient \
+	mock_idevice_id \
+	mock_ideviceinfo \
+	mock_idevicebackup2
 
 idevicebtlogger_SOURCES = idevicebtlogger.c
 idevicebtlogger_CFLAGS = $(AM_CFLAGS)
@@ -73,15 +76,6 @@ idevicebackup2_SOURCES = idevicebackup2.c
 idevicebackup2_CFLAGS = $(AM_CFLAGS) $(limd_glue_CFLAGS)
 idevicebackup2_LDFLAGS = $(AM_LDFLAGS) $(limd_glue_LIBS)
 idevicebackup2_LDADD = $(top_builddir)/src/libimobiledevice-1.0.la
-
-# Add a debug target
-if DEBUG_BUILD
-bin_PROGRAMS += idevicebackup2_debug
-idevicebackup2_debug_SOURCES = idevicebackup2.c
-idevicebackup2_debug_CFLAGS = $(AM_CFLAGS) $(limd_glue_CFLAGS) -DDEBUG_BUILD -DDEBUG_MOBILEBACKUP2=0
-idevicebackup2_debug_LDFLAGS = $(AM_LDFLAGS) $(limd_glue_LIBS)
-idevicebackup2_debug_LDADD = $(top_builddir)/src/libimobiledevice-1.0.la $(top_builddir)/common/libinternalcommon.la
-endif
 
 ideviceimagemounter_SOURCES = ideviceimagemounter.c
 ideviceimagemounter_CFLAGS = $(AM_CFLAGS) $(limd_glue_CFLAGS) $(libtatsu_CFLAGS)
@@ -151,3 +145,18 @@ if HAVE_READLINE
   afcclient_LDFLAGS += $(readline_LIBS)
 endif
 afcclient_LDADD = $(top_builddir)/src/libimobiledevice-1.0.la $(limd_glue_LIBS)
+
+mock_idevice_id_SOURCES = mock_idevice_id.c
+mock_idevice_id_CFLAGS = $(AM_CFLAGS)
+mock_idevice_id_LDFLAGS = $(AM_LDFLAGS)
+mock_idevice_id_LDADD = $(top_builddir)/src/libimobiledevice-1.0.la
+
+mock_ideviceinfo_SOURCES = mock_ideviceinfo.c
+mock_ideviceinfo_CFLAGS = $(AM_CFLAGS)
+mock_ideviceinfo_LDFLAGS = $(AM_LDFLAGS)
+mock_ideviceinfo_LDADD = $(top_builddir)/src/libimobiledevice-1.0.la
+
+mock_idevicebackup2_SOURCES = mock_idevicebackup2.c
+mock_idevicebackup2_CFLAGS = $(AM_CFLAGS)
+mock_idevicebackup2_LDFLAGS = $(AM_LDFLAGS)
+mock_idevicebackup2_LDADD = $(top_builddir)/src/libimobiledevice-1.0.la

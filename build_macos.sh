@@ -29,6 +29,9 @@ if [ -n "$SAMPLE_LIB" ]; then
         echo "Warning: Your dependencies only support arm64 architecture."
         echo "We will only build the arm64 version."
         BUILD_X86_64=0
+        echo "Build cancelled."
+        exit 1
+
     else
         BUILD_X86_64=1
     fi
