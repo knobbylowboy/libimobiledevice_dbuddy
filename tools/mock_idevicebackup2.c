@@ -23,6 +23,7 @@ static void print_usage(int argc, char **argv, int is_error)
         "  -s, --scenario N      use specific scenario (1-3)\n"
         "  -t, --time N          total execution time in seconds\n"
         "  -c, --code N          exit with code N\n"
+        "  -d, --delay N         wait N seconds before starting\n"
         "  -h, --help            prints usage information\n"
         "  -v, --version         prints version information\n"
         "\n"
@@ -56,6 +57,7 @@ int main(int argc, char **argv)
     int exit_code = 0;
     int scenario = 0;
     int total_time = DEFAULT_TOTAL_TIME;
+    int initial_delay = 0;
     int c = 0;
 
     const struct option longopts[] = {
@@ -66,11 +68,12 @@ int main(int argc, char **argv)
         { "scenario", required_argument, NULL, 's' },
         { "time", required_argument, NULL, 't' },
         { "code", required_argument, NULL, 'c' },
+        { "delay", required_argument, NULL, 'd' },
         { "version", no_argument, NULL, 'v' },
         { NULL, 0, NULL, 0}
     };
 
-    while ((c = getopt_long(argc, argv, "hu:ni:s:t:c:v", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "hu:ni:s:t:c:d:v", longopts, NULL)) != -1) {
         switch (c) {
         case 'u':
             if (!*optarg) {
@@ -109,6 +112,14 @@ int main(int argc, char **argv)
             break;
         case 'c':
             exit_code = atoi(optarg);
+            break;
+        case 'd':
+            initial_delay = atoi(optarg);
+            if (initial_delay < 0) {
+                fprintf(stderr, "ERROR: Delay must be non-negative!\n");
+                print_usage(argc, argv, 1);
+                return 2;
+            }
             break;
         case 'h':
             print_usage(argc, argv, 0);
@@ -153,6 +164,11 @@ int main(int argc, char **argv)
                         return 1;
                 }
         }
+    }
+
+    // Apply initial delay if specified
+    if (initial_delay > 0) {
+        sleep(initial_delay);
     }
 
     // Calculate time distribution

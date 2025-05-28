@@ -7,7 +7,6 @@ set -e
 # Function to fix library paths for a binary
 fix_library_paths() {
     local binary=$1
-    local frameworks_dir=$2
     
     echo "Fixing library paths for $binary"
     
@@ -22,28 +21,27 @@ fix_library_paths() {
         install_name_tool -change "$lib" "@rpath/$lib_name" "$binary"
     done
     
-    # Add the frameworks directory to the rpath
-    install_name_tool -add_rpath "@executable_path/../Frameworks" "$binary"
+    # Check if rpath already exists
+    if ! otool -l "$binary" | grep -q "@executable_path/../Frameworks"; then
+        # Add the frameworks directory to the rpath only if it doesn't exist
+        install_name_tool -add_rpath "@executable_path/../Frameworks" "$binary"
+    fi
 }
 
-# Fix paths for arm64 build
-if [ -d "build/arm64" ]; then
-    echo "Fixing paths for arm64 build..."
-    for binary in build/arm64/bin/*; do
-        if [ -f "$binary" ] && [ -x "$binary" ]; then
-            fix_library_paths "$binary" "@executable_path/../Frameworks"
-        fi
-    done
-fi
+# Paths for the Flutter/macOS app
+RESOURCES_DIR="/Users/sethbell/Dev/dispute_buddy/macos/Runner/Resources"
 
-# Fix paths for x86_64 build
-if [ -d "build/x86_64" ]; then
-    echo "Fixing paths for x86_64 build..."
-    for binary in build/x86_64/bin/*; do
-        if [ -f "$binary" ] && [ -x "$binary" ]; then
-            fix_library_paths "$binary" "@executable_path/../Frameworks"
-        fi
-    done
-fi
+# Specific files to process
+FILES=("idevice_id" "ideviceinfo" "idevicebackup2")
+
+echo "Fixing library paths for specific files..."
+for file in "${FILES[@]}"; do
+    filepath="$RESOURCES_DIR/$file"
+    if [ -f "$filepath" ] && [ -x "$filepath" ]; then
+        fix_library_paths "$filepath"
+    else
+        echo "Warning: $file not found or not executable"
+    fi
+done
 
 echo "Library paths fixed successfully!" 
