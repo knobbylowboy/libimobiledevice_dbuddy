@@ -1,0 +1,35 @@
+# Makefile for cross-compiling mock_idevicebackup2_win.exe on macOS
+# Requires MinGW-w64 to be installed: brew install mingw-w64
+
+CC = x86_64-w64-mingw32-gcc
+CFLAGS = -Wall -Wextra -std=c99 -O2
+TARGET = mock_idevicebackup2_win.exe
+SOURCE = mock_idevicebackup2_win.c
+
+# Default target
+all: $(TARGET)
+
+# Compile the Windows executable
+$(TARGET): $(SOURCE)
+	$(CC) $(CFLAGS) -o $(TARGET) $(SOURCE)
+
+# Clean build artifacts
+clean:
+	rm -f $(TARGET)
+
+# Install (copy to a common location)
+install: $(TARGET)
+	cp $(TARGET) /usr/local/bin/ || echo "Could not install to /usr/local/bin/"
+
+# Help target
+help:
+	@echo "Available targets:"
+	@echo "  all     - Build the Windows executable"
+	@echo "  clean   - Remove build artifacts"
+	@echo "  install - Install the executable to /usr/local/bin/"
+	@echo "  help    - Show this help message"
+	@echo ""
+	@echo "Requirements:"
+	@echo "  - MinGW-w64 cross-compiler (install with: brew install mingw-w64)"
+
+.PHONY: all clean install help 

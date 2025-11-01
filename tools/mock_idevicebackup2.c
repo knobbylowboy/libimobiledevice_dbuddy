@@ -4,9 +4,16 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <time.h>
+#include <signal.h>
 
 #define TOOL_NAME "mock_idevicebackup2"
 #define DEFAULT_TOTAL_TIME 80  // Current total time in seconds
+
+enum {
+    OPT_EXITCODE = 1000,
+    OPT_EXITLASTLINE,
+    OPT_EXITCODEDELAY
+};
 
 static void print_usage(int argc, char **argv, int is_error)
 {
@@ -24,6 +31,9 @@ static void print_usage(int argc, char **argv, int is_error)
         "  -t, --time N          total execution time in seconds\n"
         "  -c, --code N          exit with code N\n"
         "  -d, --delay N         wait N seconds before starting\n"
+        "      --exitcode N      after delay, exit immediately with code N\n"
+        "      --exitlastline S  line to print just before early exit\n"
+        "      --exitcodedelay N seconds after start to trigger early exit\n"
         "  -h, --help            prints usage information\n"
         "  -v, --version         prints version information\n"
         "\n"
@@ -33,6 +43,38 @@ static void print_usage(int argc, char **argv, int is_error)
         "  3: Device locked\n"
         "\n"
     );
+}
+
+static void maybe_exit_now(time_t start_time, int exit_delay_seconds, const char *final_line, int exit_code)
+{
+    if (exit_delay_seconds < 0) {
+        return;
+    }
+    double elapsed = difftime(time(NULL), start_time);
+    if (elapsed >= (double)exit_delay_seconds) {
+        if (final_line && *final_line) {
+            printf("%s\n", final_line);
+        }
+        fflush(stdout);
+        fflush(stderr);
+        if (exit_code < 0) {
+            int sig = -exit_code;
+            raise(sig);
+            _exit(128 + sig); // Fallback if signal is ignored
+        } else {
+            exit(exit_code);
+        }
+    }
+}
+
+static void sleep_checked(int seconds, time_t start_time, int exit_delay_seconds, const char *final_line, int exit_code)
+{
+    // Always check once even if seconds == 0, so zero-duration phases can still trigger early exit
+    maybe_exit_now(start_time, exit_delay_seconds, final_line, exit_code);
+    for (int i = 0; i < seconds; i++) {
+        maybe_exit_now(start_time, exit_delay_seconds, final_line, exit_code);
+        sleep(1);
+    }
 }
 
 void print_progress(int percent) {
@@ -58,6 +100,10 @@ int main(int argc, char **argv)
     int scenario = 0;
     int total_time = DEFAULT_TOTAL_TIME;
     int initial_delay = 0;
+    int forced_exit_code = -1;
+    int forced_exit_code_specified = 0;
+    const char *forced_exit_last_line = NULL;
+    int forced_exit_delay = -1;
     int c = 0;
 
     const struct option longopts[] = {
@@ -69,6 +115,9 @@ int main(int argc, char **argv)
         { "time", required_argument, NULL, 't' },
         { "code", required_argument, NULL, 'c' },
         { "delay", required_argument, NULL, 'd' },
+        { "exitcode", required_argument, NULL, OPT_EXITCODE },
+        { "exitlastline", required_argument, NULL, OPT_EXITLASTLINE },
+        { "exitcodedelay", required_argument, NULL, OPT_EXITCODEDELAY },
         { "version", no_argument, NULL, 'v' },
         { NULL, 0, NULL, 0}
     };
@@ -121,6 +170,26 @@ int main(int argc, char **argv)
                 return 2;
             }
             break;
+        case OPT_EXITCODE:
+            forced_exit_code = atoi(optarg);
+            forced_exit_code_specified = 1;
+            break;
+        case OPT_EXITLASTLINE:
+            if (!*optarg) {
+                fprintf(stderr, "ERROR: exitlastline must not be empty!\n");
+                print_usage(argc, argv, 1);
+                return 2;
+            }
+            forced_exit_last_line = optarg;
+            break;
+        case OPT_EXITCODEDELAY:
+            forced_exit_delay = atoi(optarg);
+            if (forced_exit_delay < 0) {
+                fprintf(stderr, "ERROR: exitcodedelay must be non-negative!\n");
+                print_usage(argc, argv, 1);
+                return 2;
+            }
+            break;
         case 'h':
             print_usage(argc, argv, 0);
             return 0;
@@ -132,6 +201,9 @@ int main(int argc, char **argv)
             return 2;
         }
     }
+
+    time_t start_time = time(NULL);
+    int early_exit_active = (forced_exit_code_specified && forced_exit_delay >= 0);
 
     // Handle encryption command
     if (info_cmd && strcmp(info_cmd, "encryption off") == 0) {
@@ -168,7 +240,7 @@ int main(int argc, char **argv)
 
     // Apply initial delay if specified
     if (initial_delay > 0) {
-        sleep(initial_delay);
+        sleep_checked(initial_delay, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     }
 
     // Calculate time distribution
@@ -179,57 +251,57 @@ int main(int argc, char **argv)
 
     // Initial messages
     printf("Backup directory is \"/Users/sethbell/Library/Caches/iosBackup\"\n");
-    sleep(initial_time / 9);
+    sleep_checked(initial_time / 9, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Started \"com.apple.mobilebackup2\" service on port 50579.\n");
-    sleep(initial_time / 9);
+    sleep_checked(initial_time / 9, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Negotiated Protocol Version 2.1\n");
-    sleep(initial_time / 9);
+    sleep_checked(initial_time / 9, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Reading Info.plist from backup.\n");
-    sleep(initial_time / 9);
+    sleep_checked(initial_time / 9, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Starting backup...\n");
-    sleep(initial_time / 9);
+    sleep_checked(initial_time / 9, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Enforcing full backup from device.\n");
-    sleep(initial_time / 9);
+    sleep_checked(initial_time / 9, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Backup will be unencrypted.\n");
-    sleep(initial_time / 9);
+    sleep_checked(initial_time / 9, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Requesting backup from device...\n");
-    sleep(initial_time / 9);
+    sleep_checked(initial_time / 9, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Incremental backup mode.\n");
-    sleep(initial_time / 9);
+    sleep_checked(initial_time / 9, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("*** Waiting for passcode to be entered on the device ***\n");
-    sleep(passcode_time);
+    sleep_checked(passcode_time, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
 
     // Progress updates
     for (int i = 0; i <= 100; i += 10) {
         print_progress(i);
-        sleep(progress_time / 11); // 11 steps (0 to 100 in steps of 10)
+        sleep_checked(progress_time / 11, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code); // 11 steps (0 to 100 in steps of 10)
     }
 
     // Final messages
     printf("Moving 128 files\n");
-    sleep(final_time / 15);
+    sleep_checked(final_time / 15, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Moving 128 files\n");
-    sleep(final_time / 15);
+    sleep_checked(final_time / 15, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Moving 128 files\n");
-    sleep(final_time / 15);
+    sleep_checked(final_time / 15, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Moving 70 files\n");
-    sleep(final_time / 15);
+    sleep_checked(final_time / 15, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Moving 1 file\n");
-    sleep(final_time / 15);
+    sleep_checked(final_time / 15, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Moving 1 file\n");
-    sleep(final_time / 15);
+    sleep_checked(final_time / 15, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Removing 1 file\n");
-    sleep(final_time / 15);
+    sleep_checked(final_time / 15, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Removing 1 file\n");
-    sleep(final_time / 15);
+    sleep_checked(final_time / 15, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Sending '00008110-000E785101F2401E/Status.plist' (189 Bytes)\n");
-    sleep(final_time / 15);
+    sleep_checked(final_time / 15, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Sending '00008110-000E785101F2401E/Manifest.plist' (253.2 KB)\n");
-    sleep(final_time / 15);
+    sleep_checked(final_time / 15, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Sending '00008110-000E785101F2401E/Manifest.db' (9.1 MB)\n");
-    sleep(final_time / 15);
+    sleep_checked(final_time / 15, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Received 2124 files from device.\n");
-    sleep(final_time / 15);
+    sleep_checked(final_time / 15, start_time, early_exit_active ? forced_exit_delay : -1, forced_exit_last_line, forced_exit_code);
     printf("Backup Successful.\n");
 
     return exit_code;
