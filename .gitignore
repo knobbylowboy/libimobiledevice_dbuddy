@@ -44,3 +44,7 @@ cython/*.c
 doxygen.cfg
 build/
 *_build/
+test_backup/
+test_backup_restore/
+test_backup_domains/
+test_backup_domains_restore/

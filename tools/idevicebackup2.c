@@ -55,6 +55,10 @@ int verbose = 1; /* Ensure verbose flag is available for mobilebackup2.c */
 #include <libimobiledevice-glue/utils.h>
 #include <plist/plist.h>
 
+#ifdef FORCE_NO_PLIST_UNIX_DATE
+#undef HAVE_PLIST_UNIX_DATE
+#endif
+
 #ifdef DEBUG_BUILD
 /* Add debug hooks we can use to trace what's happening */
 mobilebackup2_error_t debug_hook_mobilebackup2_client_new(idevice_t device, lockdownd_service_descriptor_t service, mobilebackup2_client_t *client)
@@ -96,6 +100,10 @@ static int quit_flag = 0;
 static int passcode_requested = 0;
 
 #define PRINT_VERBOSE(min_level, ...) if (verbose >= min_level) { printf(__VA_ARGS__); };
+
+static char **domain_whitelist = NULL;
+static size_t domain_whitelist_count = 0;
+static char *domain_whitelist_key = NULL;
 
 enum cmd_mode {
 	CMD_BACKUP,
@@ -474,7 +482,7 @@ static plist_t mobilebackup_factory_info_plist_new(const char* udid, idevice_t d
 	plist_dict_set_item(ret, "Installed Applications", installed_apps);
 
 	plist_dict_set_item(ret, "Last Backup Date",
-#ifdef HAVE_PLIST_UNIX_DATE
+#if defined(HAVE_PLIST_UNIX_DATE) && HAVE_PLIST_UNIX_DATE
 		plist_new_unix_date(time(NULL))
 #else
 		plist_new_date(time(NULL) - MAC_EPOCH, 0)
@@ -1052,6 +1060,8 @@ static int mb2_handle_receive_files(mobilebackup2_client_t mobilebackup2, plist_
 	int errcode = 0;
 	char *errdesc = NULL;
 
+	static char last_logged_domain[256];
+
 	if (!message || (plist_get_node_type(message) != PLIST_ARRAY) || plist_array_get_size(message) < 4 || !backup_dir) return 0;
 
 	node = plist_array_get_item(message, 3);
@@ -1069,6 +1079,17 @@ static int mb2_handle_receive_files(mobilebackup2_client_t mobilebackup2, plist_
 		nlen = mb2_receive_filename(mobilebackup2, &dname);
 		if (nlen == 0) {
 			break;
+		}
+
+		if (dname) {
+			if ((sizeof(last_logged_domain) > 0) && (strcmp(last_logged_domain, dname) != 0)) {
+				if (strlen(dname) < sizeof(last_logged_domain)) {
+					strcpy(last_logged_domain, dname);
+				} else {
+					last_logged_domain[0] = '\0';
+				}
+				PRINT_VERBOSE(1, "Receiving domain: %s\n", dname);
+			}
 		}
 
 		nlen = mb2_receive_filename(mobilebackup2, &fname);
@@ -1242,7 +1263,7 @@ static void mb2_handle_list_directory(mobilebackup2_client_t mobilebackup2, plis
 				plist_dict_set_item(fdict, "DLFileType", plist_new_string(ftype));
 				plist_dict_set_item(fdict, "DLFileSize", plist_new_uint(st.st_size));
 				plist_dict_set_item(fdict, "DLFileModificationDate",
-#ifdef HAVE_PLIST_UNIX_DATE
+#if defined(HAVE_PLIST_UNIX_DATE) && HAVE_PLIST_UNIX_DATE
 						    plist_new_unix_date(st.st_mtime)
 #else
 						    plist_new_date(st.st_mtime - MAC_EPOCH, 0)
@@ -1550,6 +1571,8 @@ int main(int argc, char *argv[])
 #define OPT_SKIP_APPS 7
 #define OPT_PASSWORD 8
 #define OPT_FULL 9
+#define OPT_DOMAIN 10
+#define OPT_DOMAIN_KEY 11
 
 	int c = 0;
 	const struct option longopts[] = {
@@ -1570,6 +1593,8 @@ int main(int argc, char *argv[])
 		{ "skip-apps", no_argument, NULL, OPT_SKIP_APPS },
 		{ "password", required_argument, NULL, OPT_PASSWORD },
 		{ "full", no_argument, NULL, OPT_FULL },
+		{ "domain", required_argument, NULL, OPT_DOMAIN },
+		{ "domain-key", required_argument, NULL, OPT_DOMAIN_KEY },
 		{ NULL, 0, NULL, 0}
 	};
 
@@ -1642,6 +1667,36 @@ int main(int argc, char *argv[])
 			break;
 		case OPT_FULL:
 			cmd_flags |= CMD_FLAG_FORCE_FULL_BACKUP;
+			break;
+		case OPT_DOMAIN:
+			if (!*optarg) {
+				fprintf(stderr, "ERROR: domain argument must not be empty!\n");
+				print_usage(argc, argv, 1);
+				return 2;
+			}
+			{
+				char **tmp = realloc(domain_whitelist, (domain_whitelist_count + 1) * sizeof(char*));
+				if (!tmp) {
+					fprintf(stderr, "ERROR: unable to allocate memory for domain list\n");
+					return 2;
+				}
+				domain_whitelist = tmp;
+				domain_whitelist[domain_whitelist_count] = strdup(optarg);
+				if (!domain_whitelist[domain_whitelist_count]) {
+					fprintf(stderr, "ERROR: unable to duplicate domain string\n");
+					return 2;
+				}
+				domain_whitelist_count++;
+			}
+			break;
+		case OPT_DOMAIN_KEY:
+			if (!*optarg) {
+				fprintf(stderr, "ERROR: domain-key argument must not be empty!\n");
+				print_usage(argc, argv, 1);
+				return 2;
+			}
+			free(domain_whitelist_key);
+			domain_whitelist_key = strdup(optarg);
 			break;
 		default:
 			print_usage(argc, argv, 1);
@@ -2075,15 +2130,41 @@ checkpoint:
 				plist_dict_set_item(opts, "ForceFullBackup", plist_new_bool(1));
 			}
 			/* request backup from device with manifest from last backup */
+			if (domain_whitelist_count > 0) {
+				if (!opts) {
+					opts = plist_new_dict();
+				}
+				const char *key_name = domain_whitelist_key ? domain_whitelist_key : "BackupOnlyDomains";
+				plist_t whitelist_array = plist_new_array();
+				size_t idx;
+				for (idx = 0; idx < domain_whitelist_count; idx++) {
+					if (domain_whitelist[idx]) {
+						plist_array_append_item(whitelist_array, plist_new_string(domain_whitelist[idx]));
+					}
+				}
+				plist_dict_set_item(opts, key_name, whitelist_array);
+				PRINT_VERBOSE(1, "Applied backup domain filter key '%s' with %zu entries\n", key_name, domain_whitelist_count);
+			}
 			if (willEncrypt) {
 				PRINT_VERBOSE(1, "Backup will be encrypted.\n");
 			} else {
 				PRINT_VERBOSE(1, "Backup will be unencrypted.\n");
 			}
+			if (opts) {
+				char *opts_xml = NULL;
+				uint32_t opts_xml_length = 0;
+				plist_to_xml(opts, &opts_xml, &opts_xml_length);
+				if (opts_xml) {
+					PRINT_VERBOSE(1, "Backup request options:\n%s\n", opts_xml);
+					free(opts_xml);
+				}
+			}
 			PRINT_VERBOSE(1, "Requesting backup from device...\n");
 			err = mobilebackup2_send_request(mobilebackup2, "Backup", udid, source_udid, opts);
-			if (opts)
+			if (opts) {
 				plist_free(opts);
+				opts = NULL;
+			}
 			if (err == MOBILEBACKUP2_E_SUCCESS) {
 				if (is_full_backup) {
 					PRINT_VERBOSE(1, "Full backup mode.\n");
@@ -2720,6 +2801,17 @@ files_out:
 		free(source_udid);
 		source_udid = NULL;
 	}
+	if (domain_whitelist) {
+		size_t idx;
+		for (idx = 0; idx < domain_whitelist_count; idx++) {
+			free(domain_whitelist[idx]);
+		}
+		free(domain_whitelist);
+		domain_whitelist = NULL;
+		domain_whitelist_count = 0;
+	}
+	free(domain_whitelist_key);
+	domain_whitelist_key = NULL;
 
 	return result_code;
 }
