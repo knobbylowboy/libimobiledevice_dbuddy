@@ -2,8 +2,8 @@
 
 # Script to build libimobiledevice for macOS on both x86_64 and arm64 architectures
 
-set -e  # Exit immediately if a command exits with a non-zero status
 set -x  # Print commands and their arguments as they are executed
+# Note: We don't use 'set -e' because we want to continue even if x86_64 build fails
 
 # Check if Homebrew is installed
 if ! command -v brew &> /dev/null; then
@@ -19,24 +19,18 @@ echo "Homebrew prefix: $BREW_PREFIX"
 SYSTEM_ARCH=$(uname -m)
 echo "System architecture: $SYSTEM_ARCH"
 
-# Check if dependencies support x86_64
-SAMPLE_LIB=$(find "$BREW_PREFIX/lib" -name "libplist*.dylib" | head -n 1)
-if [ -n "$SAMPLE_LIB" ]; then
-    SUPPORTS_X86_64=0
-    lipo -info "$SAMPLE_LIB" | grep -q "x86_64" && SUPPORTS_X86_64=1
-    
-    if [ $SUPPORTS_X86_64 -eq 0 ] && [ "$SYSTEM_ARCH" = "arm64" ]; then
-        echo "Warning: Your dependencies only support arm64 architecture."
-        echo "We will only build the arm64 version."
-        BUILD_X86_64=0
-        echo "Build cancelled."
-        exit 1
-
-    else
+# On arm64 systems, skip x86_64 build by default unless explicitly requested
+# Set BUILD_X86_64=1 environment variable to force x86_64 build
+if [ "$SYSTEM_ARCH" = "arm64" ]; then
+    if [ "${BUILD_X86_64:-0}" = "1" ]; then
+        echo "x86_64 build explicitly requested, will attempt cross-compilation..."
         BUILD_X86_64=1
+    else
+        echo "On arm64 system, skipping x86_64 build (set BUILD_X86_64=1 to enable)"
+        BUILD_X86_64=0
     fi
 else
-    # If we can't detect, assume we can build both
+    # On x86_64 systems, build both architectures
     BUILD_X86_64=1
 fi
 
@@ -91,9 +85,13 @@ if [ $BUILD_X86_64 -eq 1 ]; then
     export CPPFLAGS="-I$BREW_PREFIX/include"
 
     ./autogen.sh --prefix="$(pwd)/build/x86_64" --with-openssl
-    make -j$(sysctl -n hw.ncpu)
-    make install
-    make clean
+    if ! make -j$(sysctl -n hw.ncpu); then
+        echo "Warning: x86_64 build failed. Continuing with arm64 build only..."
+        make clean || true
+    else
+        make install
+        make clean
+    fi
 
     # Reset environment variables
     unset CFLAGS

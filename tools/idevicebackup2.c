@@ -43,6 +43,9 @@ int verbose = 1; /* Ensure verbose flag is available for mobilebackup2.c */
 #include <ctype.h>
 #include <time.h>
 #include <getopt.h>
+#ifndef _WIN32
+#include <fnmatch.h>
+#endif
 
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
@@ -104,6 +107,222 @@ static int passcode_requested = 0;
 static char **domain_whitelist = NULL;
 static size_t domain_whitelist_count = 0;
 static char *domain_whitelist_key = NULL;
+
+/**
+ * Simple wildcard matcher for Windows compatibility.
+ * Supports '*' (matches any sequence of characters).
+ * Returns 1 if pattern matches string, 0 otherwise.
+ */
+static int simple_wildcard_match(const char *pattern, const char *string)
+{
+	if (!pattern || !string) {
+		return 0;
+	}
+	
+	const char *p = pattern;
+	const char *s = string;
+	const char *p_star = NULL;
+	const char *s_star = NULL;
+	
+	while (*s) {
+		if (*p == '*') {
+			/* Skip consecutive '*' */
+			while (*p == '*') {
+				p++;
+			}
+			if (!*p) {
+				/* Pattern ends with '*', matches rest */
+				return 1;
+			}
+			/* Remember positions for backtracking */
+			p_star = p;
+			s_star = s;
+		} else if (*p == *s || *p == '?') {
+			/* Match single character */
+			p++;
+			s++;
+		} else if (p_star) {
+			/* Backtrack: try matching '*' to more characters */
+			p = p_star;
+			s = ++s_star;
+		} else {
+			/* No match */
+			return 0;
+		}
+	}
+	
+	/* Skip trailing '*' in pattern */
+	while (*p == '*') {
+		p++;
+	}
+	
+	/* Match if pattern is exhausted */
+	return !*p;
+}
+
+/**
+ * Extract bundle identifier from a file path.
+ * Paths may contain bundle IDs like "com.apple.MobileNotes" or "systemgroup.com.apple.osanalytics"
+ * Returns a pointer to a static buffer containing just the bundle ID (up to next '/' or end),
+ * or NULL if not found. The buffer is reused on each call.
+ */
+static const char *extract_bundle_id_from_path(const char *path)
+{
+	static char bundle_id_buf[256];
+	if (!path) {
+		return NULL;
+	}
+	
+	/* Look for common patterns that contain bundle identifiers */
+	const char *patterns[] = {
+		"com.apple.",
+		"com.google.",
+		"com.adobe.",
+		"com.microsoft.",
+		"com.facebook.",
+		"group.com.",
+		"systemgroup.com.",
+		NULL
+	};
+	
+	const char *bundle_start = NULL;
+	
+	for (int i = 0; patterns[i]; i++) {
+		const char *found = strstr(path, patterns[i]);
+		if (found) {
+			/* Found a bundle ID prefix */
+			/* For "group.com." or "systemgroup.com.", skip to "com." */
+			if (strncmp(found, "group.com.", 10) == 0) {
+				bundle_start = found + 6; /* Skip "group." */
+			} else if (strncmp(found, "systemgroup.com.", 16) == 0) {
+				bundle_start = found + 12; /* Skip "systemgroup." */
+			} else {
+				bundle_start = found;
+			}
+			break;
+		}
+	}
+	
+	/* If no standard pattern found, check if path itself looks like a bundle ID */
+	if (!bundle_start) {
+		if (strncmp(path, "com.", 4) == 0 || 
+		    strncmp(path, "org.", 4) == 0 ||
+		    strncmp(path, "net.", 4) == 0 ||
+		    strncmp(path, "io.", 3) == 0) {
+			bundle_start = path;
+		} else {
+			return NULL;
+		}
+	}
+	
+	/* Extract just the bundle ID part (up to next '/' or end of string) */
+	const char *end = strchr(bundle_start, '/');
+	size_t len;
+	if (end) {
+		len = end - bundle_start;
+	} else {
+		len = strlen(bundle_start);
+	}
+	
+	/* Limit to buffer size */
+	if (len >= sizeof(bundle_id_buf)) {
+		len = sizeof(bundle_id_buf) - 1;
+	}
+	
+	memcpy(bundle_id_buf, bundle_start, len);
+	bundle_id_buf[len] = '\0';
+	
+	return bundle_id_buf;
+}
+
+/**
+ * Check if a domain matches a pattern (supports wildcards).
+ * The domain may be a file path, so we extract bundle identifiers from it.
+ * Returns 1 if pattern matches domain, 0 otherwise.
+ */
+static int domain_matches_pattern(const char *pattern, const char *domain)
+{
+	if (!pattern || !domain) {
+		return 0;
+	}
+	
+	/* First, try direct match (for exact domain names) */
+	int has_wildcard = 0;
+	const char *p = pattern;
+	while (*p) {
+		if (*p == '*' || *p == '?') {
+			has_wildcard = 1;
+			break;
+		}
+		p++;
+	}
+	
+	if (has_wildcard) {
+#ifndef _WIN32
+		/* Try matching against the full domain/path first */
+		if (fnmatch(pattern, domain, 0) == 0) {
+			return 1;
+		}
+#else
+		if (simple_wildcard_match(pattern, domain)) {
+			return 1;
+		}
+#endif
+		
+		/* If direct match fails, try extracting bundle ID from path */
+		const char *bundle_id = extract_bundle_id_from_path(domain);
+		if (bundle_id) {
+#ifndef _WIN32
+			return fnmatch(pattern, bundle_id, 0) == 0;
+#else
+			return simple_wildcard_match(pattern, bundle_id);
+#endif
+		}
+		
+		return 0;
+	} else {
+		/* Exact match - check both full path and extracted bundle ID */
+		if (!strcmp(pattern, domain)) {
+			return 1;
+		}
+		
+		const char *bundle_id = extract_bundle_id_from_path(domain);
+		if (bundle_id && !strcmp(pattern, bundle_id)) {
+			return 1;
+		}
+		
+		return 0;
+	}
+}
+
+/**
+ * Check if a domain is in the whitelist.
+ * Returns 1 if domain is allowed, 0 if not.
+ * If whitelist is empty (domain_whitelist_count == 0), all domains are allowed.
+ * Supports wildcard patterns: '*' matches any sequence of characters.
+ */
+static int is_domain_allowed(const char *domain)
+{
+	/* If no whitelist specified, allow all domains */
+	if (domain_whitelist_count == 0) {
+		return 1;
+	}
+	
+	/* If domain is NULL or empty, reject */
+	if (!domain || !*domain) {
+		return 0;
+	}
+	
+	/* Check if domain matches any pattern in whitelist */
+	size_t idx;
+	for (idx = 0; idx < domain_whitelist_count; idx++) {
+		if (domain_whitelist[idx] && domain_matches_pattern(domain_whitelist[idx], domain)) {
+			return 1;
+		}
+	}
+	
+	return 0;
+}
 
 enum cmd_mode {
 	CMD_BACKUP,
@@ -1104,9 +1323,87 @@ static int mb2_handle_receive_files(mobilebackup2_client_t mobilebackup2, plist_
 
 		bname = string_build_path(backup_dir, fname, NULL);
 
+		/* Store relative path for logging before freeing fname */
+		char *relative_path = NULL;
 		if (fname != NULL) {
+			relative_path = strdup(fname);
 			free(fname);
 			fname = NULL;
+		}
+
+		/* Check if domain is allowed before receiving file data */
+		int domain_allowed = is_domain_allowed(dname);
+		if (!domain_allowed) {
+			/* Domain not in whitelist - skip this file but still consume data to keep protocol in sync */
+			PRINT_VERBOSE(2, "Skipping file '%s' from domain '%s' (not in whitelist)\n", relative_path ? relative_path : "(unknown)", dname ? dname : "(unknown)");
+			if (relative_path) {
+				free(relative_path);
+				relative_path = NULL;
+			}
+			free(bname);
+			bname = NULL;
+			
+			/* Consume file data without saving */
+			r = 0;
+			nlen = 0;
+			mobilebackup2_receive_raw(mobilebackup2, (char*)&nlen, 4, &r);
+			if (r != 4) {
+				printf("ERROR: %s: could not receive code length!\n", __func__);
+				break;
+			}
+			nlen = be32toh(nlen);
+			
+			last_code = code;
+			code = 0;
+			
+			mobilebackup2_receive_raw(mobilebackup2, &code, 1, &r);
+			if (r != 1) {
+				printf("ERROR: %s: could not receive code!\n", __func__);
+				break;
+			}
+			
+			/* Discard file data */
+			while (code == CODE_FILE_DATA) {
+				blocksize = nlen - 1;
+				bdone = 0;
+				rlen = 0;
+				while (bdone < blocksize) {
+					if ((blocksize - bdone) < sizeof(buf)) {
+						rlen = blocksize - bdone;
+					} else {
+						rlen = sizeof(buf);
+					}
+					mobilebackup2_receive_raw(mobilebackup2, buf, rlen, &r);
+					if ((int)r <= 0) {
+						break;
+					}
+					bdone += r;
+				}
+				if (quit_flag)
+					break;
+				nlen = 0;
+				mobilebackup2_receive_raw(mobilebackup2, (char*)&nlen, 4, &r);
+				nlen = be32toh(nlen);
+				if (nlen > 0) {
+					last_code = code;
+					mobilebackup2_receive_raw(mobilebackup2, &code, 1, &r);
+				} else {
+					break;
+				}
+			}
+			
+			/* Check for error message */
+			if (code == CODE_ERROR_REMOTE) {
+				char *msg = (char*)malloc(nlen);
+				mobilebackup2_receive_raw(mobilebackup2, msg, nlen-1, &r);
+				msg[r] = 0;
+				if (last_code != CODE_FILE_DATA) {
+					fprintf(stdout, "\nReceived an error message from device: %s\n", msg);
+				}
+				free(msg);
+			}
+			
+			continue; /* Skip to next file */
 		}
 
 		r = 0;
@@ -1114,6 +1411,10 @@ static int mb2_handle_receive_files(mobilebackup2_client_t mobilebackup2, plist_
 		mobilebackup2_receive_raw(mobilebackup2, (char*)&nlen, 4, &r);
 		if (r != 4) {
 			printf("ERROR: %s: could not receive code length!\n", __func__);
+			if (relative_path) {
+				free(relative_path);
+				relative_path = NULL;
+			}
 			break;
 		}
 		nlen = be32toh(nlen);
@@ -1124,6 +1425,10 @@ static int mb2_handle_receive_files(mobilebackup2_client_t mobilebackup2, plist_
 		mobilebackup2_receive_raw(mobilebackup2, &code, 1, &r);
 		if (r != 1) {
 			printf("ERROR: %s: could not receive code!\n", __func__);
+			if (relative_path) {
+				free(relative_path);
+				relative_path = NULL;
+			}
 			break;
 		}
 
@@ -1172,11 +1477,26 @@ static int mb2_handle_receive_files(mobilebackup2_client_t mobilebackup2, plist_
 		if (f) {
 			fclose(f);
 			file_count++;
+			/* Log file path and domain after file is saved */
+			/* Print to stderr to avoid being overwritten by progress bar */
+			if (relative_path && dname) {
+				fprintf(stderr, "FILE_SAVED: path=%s domain=%s\n", relative_path, dname);
+			} else if (relative_path) {
+				fprintf(stderr, "FILE_SAVED: path=%s domain=(unknown)\n", relative_path);
+			}
 		} else {
 			errcode = errno_to_device_error(errno);
 			errdesc = strerror(errno);
 			printf("Error opening '%s' for writing: %s\n", bname, errdesc);
+			if (relative_path) {
+				free(relative_path);
+				relative_path = NULL;
+			}
 			break;
+		}
+		if (relative_path) {
+			free(relative_path);
+			relative_path = NULL;
 		}
 		if (nlen == 0) {
 			break;
@@ -1505,6 +1825,12 @@ static void print_usage(int argc, char **argv, int is_error)
 		"  -n, --network         connect to network device\n"
 		"  -i, --interactive     request passwords interactively\n"
 		"  -d, --debug           enable communication debugging\n"
+		"  --domain DOMAIN       filter backup to only include files from DOMAIN\n"
+		"                       (can be specified multiple times for multiple domains)\n"
+		"                       Supports wildcards: '*' matches any sequence of characters\n"
+		"                       Examples: '*Domain1*', 'Domain2*', '*Domain3'\n"
+		"                       If no domains specified, all files are saved.\n"
+		"                       If domains specified, only files from matching domains are saved.\n"
 		"  -h, --help            prints usage information\n"
 		"  -v, --version         prints version information\n"
 		"\n"
@@ -2476,21 +2802,41 @@ checkpoint:
 								plist_get_string_val(val, &str);
 								if (str) {
 									char *newpath = string_build_path(backup_directory, str, NULL);
-									free(str);
 									char *oldpath = string_build_path(backup_directory, key, NULL);
 
-									if ((stat(newpath, &st) == 0) && S_ISDIR(st.st_mode))
-										rmdir_recursive(newpath);
-									else
-										remove_file(newpath);
-									if (rename(oldpath, newpath) < 0) {
-										printf("Renameing '%s' to '%s' failed: %s (%d)\n", oldpath, newpath, strerror(errno), errno);
-										errcode = errno_to_device_error(errno);
-										errdesc = strerror(errno);
-										break;
+									/* Check if source file exists (may have been filtered/deleted) */
+									if (stat(oldpath, &st) < 0) {
+										if (errno == ENOENT) {
+											/* File was filtered out - skip this move operation */
+											PRINT_VERBOSE(2, "Skipping move of filtered file: %s -> %s\n", key, str);
+										} else {
+											printf("Error checking '%s' before move: %s (%d)\n", oldpath, strerror(errno), errno);
+											errcode = errno_to_device_error(errno);
+											errdesc = strerror(errno);
+											free(oldpath);
+											free(newpath);
+											free(str);
+											break;
+										}
+									} else {
+										/* File exists - proceed with move */
+										if ((stat(newpath, &st) == 0) && S_ISDIR(st.st_mode))
+											rmdir_recursive(newpath);
+										else
+											remove_file(newpath);
+										if (rename(oldpath, newpath) < 0) {
+											printf("Renameing '%s' to '%s' failed: %s (%d)\n", oldpath, newpath, strerror(errno), errno);
+											errcode = errno_to_device_error(errno);
+											errdesc = strerror(errno);
+											free(oldpath);
+											free(newpath);
+											free(str);
+											break;
+										}
 									}
 									free(oldpath);
 									free(newpath);
+									free(str);
 								}
 								free(key);
 								key = NULL;
