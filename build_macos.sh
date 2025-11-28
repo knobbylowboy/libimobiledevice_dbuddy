@@ -5,19 +5,53 @@
 set -x  # Print commands and their arguments as they are executed
 # Note: We don't use 'set -e' because we want to continue even if x86_64 build fails
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION_FILE="$SCRIPT_DIR/.tarball-version"
+cd "$SCRIPT_DIR"
+
+# Force libimobiledevice version string for downstream tooling unless explicitly overridden
+if [[ -z "${RELEASE_VERSION:-}" ]]; then
+    if [[ -f "$VERSION_FILE" ]]; then
+        RELEASE_VERSION=$(tr -d '\r' < "$VERSION_FILE" | head -n 1)
+        RELEASE_VERSION="${RELEASE_VERSION%$'\n'}"
+    else
+        RELEASE_VERSION="dbuddy 1.0.0"
+    fi
+fi
+export RELEASE_VERSION
+
 # Check if Homebrew is installed
 if ! command -v brew &> /dev/null; then
     echo "Homebrew is required but not installed. Please install Homebrew first."
     exit 1
 fi
 
-# Get Homebrew prefix
+# Get Homebrew prefix (default fallback)
 BREW_PREFIX=$(brew --prefix)
-echo "Homebrew prefix: $BREW_PREFIX"
+echo "Detected Homebrew prefix: $BREW_PREFIX"
 
 # Detect system architecture
 SYSTEM_ARCH=$(uname -m)
 echo "System architecture: $SYSTEM_ARCH"
+
+# Derive architecture-specific Homebrew prefixes (override via env if needed)
+if [ "$SYSTEM_ARCH" = "arm64" ]; then
+    : "${ARM64_BREW_PREFIX:=/opt/homebrew}"
+    : "${X86_BREW_PREFIX:=/usr/local}"
+else
+    : "${ARM64_BREW_PREFIX:=$BREW_PREFIX}"
+    : "${X86_BREW_PREFIX:=$BREW_PREFIX}"
+fi
+
+if [ ! -d "$ARM64_BREW_PREFIX" ]; then
+    ARM64_BREW_PREFIX="$BREW_PREFIX"
+fi
+if [ ! -d "$X86_BREW_PREFIX" ]; then
+    X86_BREW_PREFIX="$BREW_PREFIX"
+fi
+
+echo "arm64 Homebrew prefix: $ARM64_BREW_PREFIX"
+echo "x86_64 Homebrew prefix: $X86_BREW_PREFIX"
 
 # On arm64 systems, skip x86_64 build by default unless explicitly requested
 # Set BUILD_X86_64=1 environment variable to force x86_64 build
@@ -75,14 +109,15 @@ check_deps
 
 # Make sure autogen.sh is executable
 chmod +x ./autogen.sh
+rm -rf autom4te.cache
 
 # Build for x86_64 if supported
 if [ $BUILD_X86_64 -eq 1 ]; then
     echo "Building for x86_64 architecture..."
-    export PKG_CONFIG_PATH="$BREW_PREFIX/lib/pkgconfig"
+    export PKG_CONFIG_PATH="$X86_BREW_PREFIX/lib/pkgconfig"
     export CFLAGS="-arch x86_64 -mmacosx-version-min=10.15"
-    export LDFLAGS="-arch x86_64 -L$BREW_PREFIX/lib"
-    export CPPFLAGS="-I$BREW_PREFIX/include"
+    export LDFLAGS="-arch x86_64 -L$X86_BREW_PREFIX/lib"
+    export CPPFLAGS="-I$X86_BREW_PREFIX/include"
 
     ./autogen.sh --prefix="$(pwd)/build/x86_64" --with-openssl
     if ! make -j$(sysctl -n hw.ncpu); then
@@ -101,10 +136,10 @@ fi
 
 # Build for arm64
 echo "Building for arm64 architecture..."
-export PKG_CONFIG_PATH="$BREW_PREFIX/lib/pkgconfig"
+export PKG_CONFIG_PATH="$ARM64_BREW_PREFIX/lib/pkgconfig"
 export CFLAGS="-arch arm64 -mmacosx-version-min=11.0"
-export LDFLAGS="-arch arm64 -L$BREW_PREFIX/lib"
-export CPPFLAGS="-I$BREW_PREFIX/include"
+export LDFLAGS="-arch arm64 -L$ARM64_BREW_PREFIX/lib"
+export CPPFLAGS="-I$ARM64_BREW_PREFIX/include"
 
 ./autogen.sh --prefix="$(pwd)/build/arm64" --with-openssl
 make -j$(sysctl -n hw.ncpu)

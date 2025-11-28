@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
+VERSION_FILE="$REPO_ROOT/.tarball-version"
 FRAMEWORKS_DIR=""
 
 usage() {
@@ -39,6 +40,45 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+bump_patch_version() {
+  local default_label="dbuddy"
+  local default_major="1"
+  local default_minor="0"
+  local default_patch="0"
+  local current=""
+
+  if [[ -f "$VERSION_FILE" ]]; then
+    current=$(tr -d '\r' < "$VERSION_FILE" | head -n 1)
+    current="${current%$'\n'}"
+  fi
+
+  if [[ -z "$current" ]]; then
+    current="${default_label} ${default_major}.${default_minor}.${default_patch}"
+  fi
+
+  local label major minor patch
+  if [[ $current =~ ^([[:alnum:]_.-]+)[[:space:]]+([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
+    label="${BASH_REMATCH[1]}"
+    major="${BASH_REMATCH[2]}"
+    minor="${BASH_REMATCH[3]}"
+    patch="${BASH_REMATCH[5]}"
+  else
+    echo "Warning: Unable to parse version '$current'. Resetting to default."
+    label="$default_label"
+    major="$default_major"
+    minor="$default_minor"
+    patch="$default_patch"
+  fi
+
+  patch="${patch:-0}"
+  patch=$((patch + 1))
+
+  local new_version="${label} ${major}.${minor}.${patch}"
+  echo "$new_version" > "$VERSION_FILE"
+  export RELEASE_VERSION="$new_version"
+  echo "==> Version bumped to $new_version"
+}
 
 detect_frameworks_dir() {
   local candidates=(
@@ -193,6 +233,7 @@ main() {
 
   echo "Frameworks directory: $FRAMEWORKS_DIR"
 
+  bump_patch_version
   build_universal
   fix_install_names "$FRAMEWORKS_DIR"
   rewrite_dependency_paths "$FRAMEWORKS_DIR"

@@ -1,0 +1,43 @@
+{
+    // Debugging presets for idevicebackup2 without rebuilding the project.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "idevicebackup2 - show version",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/universal/bin/idevicebackup2",
+            "args": ["-v"],
+            "cwd": "${workspaceFolder}/build/universal/bin",
+            "stopAtEntry": false,
+            "console": "integratedTerminal",
+            "MIMode": "lldb",
+            "environment": [
+                {
+                    "name": "DYLD_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/build/universal/lib:${workspaceFolder}/build/universal/bin"
+                }
+            ]
+        },
+        {
+            "name": "idevicebackup2 - custom args",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/universal/bin/idevicebackup2",
+            "args": [
+                "list",
+                "${workspaceFolder}/backups"
+            ],
+            "cwd": "${workspaceFolder}/build/universal/bin",
+            "stopAtEntry": false,
+            "console": "integratedTerminal",
+            "MIMode": "lldb",
+            "environment": [
+                {
+                    "name": "DYLD_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/build/universal/lib:${workspaceFolder}/build/universal/bin"
+                }
+            ]
+        }
+    ]
+}
